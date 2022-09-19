@@ -1,0 +1,6 @@
+domain: microsoft.com
+layout:
+- go.kubebuilder.io/v3
+projectName: wi-acrpull
+repo: github.com/niontive/wi-acrpull
+version: "3"
