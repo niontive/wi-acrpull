@@ -25,17 +25,39 @@ import (
 
 // WIpullbindingSpec defines the desired state of WIpullbinding
 type WIpullbindingSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// +kubebuilder:validation:MinLength=0
 
-	// Foo is an example field of WIpullbinding. Edit wipullbinding_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// The full server name for the ACR. For example, test.azurecr.io
+	AcrServer string `json:"acrServer"`
+
+	// The Service Principal client ID that is used to authenticate with ACR
+	ServicePrincipalClientID string `json:"servicePrincipalClientID"`
+
+	// The service principal's tenant ID that is used to authenticate with ACR (if ClientID is specified, this is ignored)
+	ServicePrincipalTenantID string `json:"servicePrincipalTenantID"`
+
+	// The Service Account to associate the image pull secret with. If this is not specified, the default Service Account
+	// of the namespace will be used.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 }
 
 // WIpullbindingStatus defines the observed state of WIpullbinding
 type WIpullbindingStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	// Information when was the last time the ACR token was refreshed.
+	// +optional
+	LastTokenRefreshTime *metav1.Time `json:"lastTokenRefreshTime,omitempty"`
+
+	// The expiration date of the current ACR token.
+	// +optional
+	TokenExpirationTime *metav1.Time `json:"tokenExpirationTime,omitempty"`
+
+	// Error message if there was an error updating the token.
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 //+kubebuilder:object:root=true
