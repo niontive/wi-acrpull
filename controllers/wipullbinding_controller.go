@@ -18,13 +18,23 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 
+	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/go-logr/logr"
 	wiacrpullv1 "github.com/niontive/wi-acrpull/api/v1"
+)
+
+const (
+	wiAcrPullFinalizerName    = "wi-acrpull.microsoft.com"
+	defaultServiceAccountName = "default"
 )
 
 // WIpullbindingReconciler reconciles a WIpullbinding object
@@ -47,9 +57,41 @@ type WIpullbindingReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.12.2/pkg/reconcile
 func (r *WIpullbindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	log := log.FromContext(ctx)
 
 	// TODO(user): your logic here
+	var acrBinding wiacrpullv1.WIpullbinding
+	if err := r.Get(ctx, req.NamespacedName, &acrBinding); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "unable to fetch acrPullBinding.")
+			return ctrl.Result{}, err
+		}
+		log.Info("AcrPullBinding is not found. Ignore because this is expected to happen when it is being deleted.")
+		return ctrl.Result{}, nil
+	}
+
+	serviceAccountName := getServiceAccountName(acrBinding.Spec.ServiceAccountName)
+
+	// examine DeletionTimestamp to determine if acr pull binding is under deletion
+	if acrBinding.ObjectMeta.DeletionTimestamp.IsZero() {
+		// the object is not being deleted, so if it does not have our finalizer,
+		// then need to add the finalizer and update the object.
+		if err := r.addFinalizer(ctx, &acrBinding, log); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		// the object is being deleted
+		if err := r.removeFinalizer(ctx, &acrBinding, req, serviceAccountName, log); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// stop reconciliation as the item is being deleted
+		return ctrl.Result{}, nil
+	}
+
+	// TODO: acquire ACR token
+
+	// TODO: Add pull secret to service account
 
 	return ctrl.Result{}, nil
 }
@@ -59,4 +101,91 @@ func (r *WIpullbindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&wiacrpullv1.WIpullbinding{}).
 		Complete(r)
+}
+
+func (r *WIpullbindingReconciler) addFinalizer(ctx context.Context, acrBinding *wiacrpullv1.WIpullbinding, log logr.Logger) error {
+	if !containsString(acrBinding.ObjectMeta.Finalizers, wiAcrPullFinalizerName) {
+		acrBinding.ObjectMeta.Finalizers = append(acrBinding.ObjectMeta.Finalizers, wiAcrPullFinalizerName)
+		if err := r.Update(ctx, acrBinding); err != nil {
+			log.Error(err, "Failed to append acr pull binding finalizer", "finalizerName", wiAcrPullFinalizerName)
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *WIpullbindingReconciler) removeFinalizer(ctx context.Context, acrBinding *wiacrpullv1.WIpullbinding,
+	req ctrl.Request, serviceAccountName string, log logr.Logger) error {
+	if containsString(acrBinding.ObjectMeta.Finalizers, wiAcrPullFinalizerName) {
+		// our finalizer is present, so need to clean up ImagePullSecret reference
+		var serviceAccount v1.ServiceAccount
+		saNamespacedName := k8stypes.NamespacedName{
+			Namespace: req.Namespace,
+			Name:      serviceAccountName,
+		}
+		if err := r.Get(ctx, saNamespacedName, &serviceAccount); err != nil {
+			if !apierrors.IsNotFound(err) {
+				log.Error(err, "Failed to get service account")
+				return err
+			}
+			log.Info("Service account is not found. Continue removing finalizer", "serviceAccountName", saNamespacedName.Name)
+		} else {
+			pullSecretName := getPullSecretName(acrBinding.Name)
+			serviceAccount.ImagePullSecrets = removeImagePullSecretRef(serviceAccount.ImagePullSecrets, pullSecretName)
+			if err := r.Update(ctx, &serviceAccount); err != nil {
+				log.Error(err, "Failed to remove image pull secret reference from default service account", "pullSecretName", pullSecretName)
+				return err
+			}
+		}
+
+		// remove our finalizer from the list and update it.
+		acrBinding.ObjectMeta.Finalizers = removeString(acrBinding.ObjectMeta.Finalizers, wiAcrPullFinalizerName)
+		if err := r.Update(ctx, acrBinding); err != nil {
+			log.Error(err, "Failed to remove acr pull binding finalizer", "finalizerName", wiAcrPullFinalizerName)
+			return err
+		}
+	}
+	return nil
+}
+
+func removeString(slice []string, s string) []string {
+	var result []string
+	for _, item := range slice {
+		if item == s {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func removeImagePullSecretRef(imagePullSecretRefs []v1.LocalObjectReference, secretName string) []v1.LocalObjectReference {
+	var result []v1.LocalObjectReference
+	for _, secretRef := range imagePullSecretRefs {
+		if secretRef.Name == secretName {
+			continue
+		}
+		result = append(result, secretRef)
+	}
+	return result
+}
+
+func getServiceAccountName(userSpecifiedName string) string {
+	if userSpecifiedName != "" {
+		return userSpecifiedName
+	}
+	return defaultServiceAccountName
+}
+
+func containsString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+func getPullSecretName(acrBindingName string) string {
+	return fmt.Sprintf("%s-msi-acrpull-secret", acrBindingName)
 }
