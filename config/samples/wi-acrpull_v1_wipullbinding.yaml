@@ -1,0 +1,6 @@
+apiVersion: wi-acrpull.microsoft.com/v1
+kind: WIpullbinding
+metadata:
+  name: wipullbinding-sample
+spec:
+  # TODO(user): Add fields here

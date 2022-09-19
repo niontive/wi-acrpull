@@ -1,0 +1,24 @@
+# permissions for end users to edit wipullbindings.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: wipullbinding-editor-role
+rules:
+- apiGroups:
+  - wi-acrpull.microsoft.com
+  resources:
+  - wipullbindings
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - wi-acrpull.microsoft.com
+  resources:
+  - wipullbindings/status
+  verbs:
+  - get
