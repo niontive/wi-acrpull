@@ -32,7 +32,7 @@ func AcquireACRAccessToken(ctx context.Context, clientID, tenantID, acrFQDN stri
 		return "", fmt.Errorf("Unable to get new confidential client app: %w", err)
 	}
 
-	resource := "https://management.azure.com/"z
+	resource := "https://management.azure.com/"
 
 	// trim the suffix / if exists
 	resource = strings.TrimSuffix(resource, "/")
