@@ -19,22 +19,32 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/go-logr/logr"
 	wiacrpullv1 "github.com/niontive/wi-acrpull/api/v1"
+	"github.com/niontive/wi-acrpull/pkg/authorizer"
+	"github.com/niontive/wi-acrpull/pkg/authorizer/types"
+	"github.com/pkg/errors"
 )
 
 const (
+	ownerKey                  = ".metadata.controller"
 	wiAcrPullFinalizerName    = "wi-acrpull.microsoft.com"
 	defaultServiceAccountName = "default"
+	dockerConfigKey           = ".dockerconfigjson"
+
+	tokenRefreshBuffer = time.Minute * 30
 )
 
 // WIpullbindingReconciler reconciles a WIpullbinding object
@@ -89,17 +99,122 @@ func (r *WIpullbindingReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	// TODO: acquire ACR token
+	clientID := acrBinding.Spec.ServicePrincipalClientID
+	tenantID := acrBinding.Spec.ServicePrincipalTenantID
+	acrServer := acrBinding.Spec.AcrServer
 
-	// TODO: Add pull secret to service account
+	acrAccessToken, err := authorizer.AcquireACRAccessToken(ctx, clientID, tenantID, acrServer)
+	if err != nil {
+		log.Error(err, "Failed to get ACR access token")
+		if err := r.setErrStatus(ctx, err, &acrBinding); err != nil {
+			log.Error(err, "Failed to update error status")
+		}
 
-	return ctrl.Result{}, nil
+		return ctrl.Result{}, err
+	}
+
+	dockerConfig := authorizer.CreateACRDockerCfg(acrServer, acrAccessToken)
+
+	var pullSecrets v1.SecretList
+	if err := r.List(ctx, &pullSecrets, client.InNamespace(req.Namespace), client.MatchingFields{ownerKey: req.Name}); err != nil {
+		log.Error(err, "unable to list child secrets")
+		return ctrl.Result{}, err
+	}
+	pullSecret := getPullSecret(&acrBinding, pullSecrets.Items)
+
+	// Create a new secret if one doesn't already exist
+	if pullSecret == nil {
+		log.Info("Creating new pull secret")
+
+		pullSecret, err := newBasePullSecret(&acrBinding, dockerConfig, r.Scheme)
+		if err != nil {
+			log.Error(err, "Failed to construct pull secret")
+			return ctrl.Result{}, err
+		}
+
+		if err := r.Create(ctx, pullSecret); err != nil {
+			log.Error(err, "Failed to create pull secret in cluster")
+			return ctrl.Result{}, err
+		}
+	} else {
+		log.Info("Updating existing pull secret")
+
+		pullSecret := updatePullSecret(&pullSecrets.Items[0], dockerConfig)
+		if err := r.Update(ctx, pullSecret); err != nil {
+			log.Error(err, "Failed to update pull secret")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Associate the image pull secret with the default service account of the namespace
+	if err := r.updateServiceAccount(ctx, &acrBinding, req, serviceAccountName, log); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.setSuccessStatus(ctx, &acrBinding, acrAccessToken); err != nil {
+		log.Error(err, "Failed to update acr binding status")
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{
+		RequeueAfter: getTokenRefreshDuration(acrAccessToken),
+	}, nil
+}
+
+func (r *WIpullbindingReconciler) updateServiceAccount(ctx context.Context, acrBinding *wiacrpullv1.WIpullbinding,
+	req ctrl.Request, serviceAccountName string, log logr.Logger) error {
+	var serviceAccount v1.ServiceAccount
+	saNamespacedName := k8stypes.NamespacedName{
+		Namespace: req.Namespace,
+		Name:      serviceAccountName,
+	}
+	if err := r.Get(ctx, saNamespacedName, &serviceAccount); err != nil {
+		log.Error(err, "Failed to get service account")
+		return err
+	}
+	pullSecretName := getPullSecretName(acrBinding.Name)
+	if !imagePullSecretRefExist(serviceAccount.ImagePullSecrets, pullSecretName) {
+		log.Info("Updating default service account")
+		appendImagePullSecretRef(&serviceAccount, pullSecretName)
+		if err := r.Update(ctx, &serviceAccount); err != nil {
+			log.Error(err, "Failed to append image pull secret reference to default service account", "pullSecretName", pullSecretName)
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *WIpullbindingReconciler) setErrStatus(ctx context.Context, err error, acrBinding *wiacrpullv1.WIpullbinding) error {
+	acrBinding.Status.Error = err.Error()
+	if err := r.Status().Update(ctx, acrBinding); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WIpullbindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &v1.Secret{}, ownerKey, func(rawObj client.Object) []string {
+		secret := rawObj.(*v1.Secret)
+		owner := metav1.GetControllerOf(secret)
+		if owner == nil {
+			return nil
+		}
+
+		if owner.APIVersion != wiacrpullv1.GroupVersion.String() || owner.Kind != "WIpullbinding" {
+			return nil
+		}
+
+		return []string{owner.Name}
+	}); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&wiacrpullv1.WIpullbinding{}).
+		WithEventFilter(predicate.GenerationChangedPredicate{}). // Needed to not enter reconcile loop on status update
+		Owns(&v1.Secret{}).
 		Complete(r)
 }
 
@@ -148,6 +263,24 @@ func (r *WIpullbindingReconciler) removeFinalizer(ctx context.Context, acrBindin
 	return nil
 }
 
+func (r *WIpullbindingReconciler) setSuccessStatus(ctx context.Context, acrBinding *wiacrpullv1.WIpullbinding, accessToken types.AccessToken) error {
+	tokenExp, err := accessToken.GetTokenExp()
+	if err != nil {
+		return err
+	}
+
+	acrBinding.Status = wiacrpullv1.WIpullbindingStatus{
+		TokenExpirationTime:  &metav1.Time{Time: tokenExp},
+		LastTokenRefreshTime: &metav1.Time{Time: time.Now().UTC()},
+	}
+
+	if err := r.Status().Update(ctx, acrBinding); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func removeString(slice []string, s string) []string {
 	var result []string
 	for _, item := range slice {
@@ -188,4 +321,81 @@ func containsString(slice []string, s string) bool {
 
 func getPullSecretName(acrBindingName string) string {
 	return fmt.Sprintf("%s-msi-acrpull-secret", acrBindingName)
+}
+
+func getPullSecret(acrBinding *wiacrpullv1.WIpullbinding, pullSecrets []v1.Secret) *v1.Secret {
+	if pullSecrets == nil {
+		return nil
+	}
+
+	pullSecretName := getPullSecretName(acrBinding.Name)
+
+	for idx, secret := range pullSecrets {
+		if secret.Name == pullSecretName {
+			return &pullSecrets[idx]
+		}
+	}
+
+	return nil
+}
+
+func newBasePullSecret(acrBinding *wiacrpullv1.WIpullbinding,
+	dockerConfig string, scheme *runtime.Scheme) (*v1.Secret, error) {
+
+	pullSecret := &v1.Secret{
+		Type: v1.SecretTypeDockerConfigJson,
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      map[string]string{},
+			Annotations: map[string]string{},
+			Name:        getPullSecretName(acrBinding.Name),
+			Namespace:   acrBinding.Namespace,
+		},
+		Data: map[string][]byte{
+			dockerConfigKey: []byte(dockerConfig),
+		},
+	}
+
+	if err := ctrl.SetControllerReference(acrBinding, pullSecret, scheme); err != nil {
+		return nil, errors.Wrap(err, "failed to create Acr ImagePullSecret")
+	}
+
+	return pullSecret, nil
+}
+
+func updatePullSecret(pullSecret *v1.Secret, dockerConfig string) *v1.Secret {
+	pullSecret.Data[dockerConfigKey] = []byte(dockerConfig)
+	return pullSecret
+}
+
+func getTokenRefreshDuration(accessToken types.AccessToken) time.Duration {
+	exp, err := accessToken.GetTokenExp()
+	if err != nil {
+		return 0
+	}
+
+	refreshDuration := exp.Sub(time.Now().Add(tokenRefreshBuffer))
+	if refreshDuration < 0 {
+		return 0
+	}
+
+	return refreshDuration
+}
+
+func imagePullSecretRefExist(imagePullSecretRefs []v1.LocalObjectReference, secretName string) bool {
+	if imagePullSecretRefs == nil {
+		return false
+	}
+	for _, secretRef := range imagePullSecretRefs {
+		if secretRef.Name == secretName {
+			return true
+		}
+	}
+	return false
+}
+
+func appendImagePullSecretRef(serviceAccount *v1.ServiceAccount, secretName string) {
+	secretReference := &v1.LocalObjectReference{
+		Name: secretName,
+	}
+	serviceAccount.ImagePullSecrets = append(serviceAccount.ImagePullSecrets, *secretReference)
 }
