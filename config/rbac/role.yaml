@@ -6,22 +6,6 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - '*'
-- apiGroups:
-  - ""
-  resources:
-  - serviceaccounts
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
   - wi-acrpull.microsoft.com
   resources:
   - wipullbindings
