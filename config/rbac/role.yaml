@@ -1,0 +1,49 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - '*'
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - wi-acrpull.microsoft.com
+  resources:
+  - wipullbindings
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - wi-acrpull.microsoft.com
+  resources:
+  - wipullbindings/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - wi-acrpull.microsoft.com
+  resources:
+  - wipullbindings/status
+  verbs:
+  - get
+  - patch
+  - update

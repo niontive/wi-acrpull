@@ -3,4 +3,6 @@ kind: WIpullbinding
 metadata:
   name: wipullbinding-sample
 spec:
-  # TODO(user): Add fields here
+  acrServer: "h22wiapcr.azurecr.io"
+  servicePrincipalClientID: "b742f8aa-201e-41ac-8421-708d49bbe1da"
+  servicePrincipalTenantID: "72f988bf-86f1-41af-91ab-2d7cd011db47"
