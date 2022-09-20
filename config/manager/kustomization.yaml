@@ -13,4 +13,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: controllerreg.azurecr.io/wi-acrpull
-  newTag: latest
+  newTag: first

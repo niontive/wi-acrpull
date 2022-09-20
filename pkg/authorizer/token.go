@@ -32,7 +32,16 @@ func AcquireACRAccessToken(ctx context.Context, clientID, tenantID, acrFQDN stri
 		return "", fmt.Errorf("Unable to get new confidential client app: %w", err)
 	}
 
-	authResult, err := confidentialClientApp.AcquireTokenByCredential(ctx, []string{"/.default"})
+	resource := "https://management.azure.com/"z
+
+	// trim the suffix / if exists
+	resource = strings.TrimSuffix(resource, "/")
+	// .default needs to be added to the scope
+	if !strings.HasSuffix(resource, ".default") {
+		resource += "/.default"
+	}
+
+	authResult, err := confidentialClientApp.AcquireTokenByCredential(ctx, []string{resource})
 	if err != nil {
 		return "", fmt.Errorf("Unable to acquire bearer token: %w", err)
 	}
