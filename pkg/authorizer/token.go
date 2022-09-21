@@ -43,7 +43,7 @@ func AcquireACRAccessToken(ctx context.Context, clientID, tenantID, acrFQDN stri
 
 	authResult, err := confidentialClientApp.AcquireTokenByCredential(ctx, []string{resource})
 	if err != nil {
-		return "", fmt.Errorf("Unable to acquire bearer token for resource %s: %w.", resource, err)
+		return "", fmt.Errorf("Unable to acquire bearer token for clientID %s: %w.", clientID, err)
 	}
 
 	// Use auth token to exchange for ACR token

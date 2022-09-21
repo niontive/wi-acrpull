@@ -1,0 +1,9 @@
+{
+    "name": "kubernetes-federated-credential",
+    "issuer": "https://oidc.prod-aks.azure.com/afb643a7-caa7-4fe6-9d41-08399ec3c7be/",
+    "subject": "system:serviceaccount:wi-acrpull-system:wi-acrpull-controller-manager",
+    "description": "Kubernetes service account federated credential",
+    "audiences": [
+      "api://AzureADTokenExchange"
+    ]
+}

@@ -77,5 +77,6 @@ spec:
           - serviceAccountToken:
              path: saToken
              expirationSeconds: 660
+             audience: "api://AzureADTokenExchange"
       terminationGracePeriodSeconds: 10
 
