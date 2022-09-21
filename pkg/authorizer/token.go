@@ -43,7 +43,7 @@ func AcquireACRAccessToken(ctx context.Context, clientID, tenantID, acrFQDN stri
 
 	authResult, err := confidentialClientApp.AcquireTokenByCredential(ctx, []string{resource})
 	if err != nil {
-		return "", fmt.Errorf("Unable to acquire bearer token: %w", err)
+		return "", fmt.Errorf("Unable to acquire bearer token for resource %s: %w.", resource, err)
 	}
 
 	// Use auth token to exchange for ACR token
@@ -95,7 +95,7 @@ func AcquireACRAccessToken(ctx context.Context, clientID, tenantID, acrFQDN stri
 }
 
 func readJWTFromFS() (string, error) {
-	const SATokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	const SATokenPath = "/var/run/secrets/token/saToken"
 
 	f, err := os.ReadFile(SATokenPath)
 	if err != nil {

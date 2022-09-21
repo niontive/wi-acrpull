@@ -39,6 +39,9 @@ spec:
         args:
         - --leader-elect
         image: controller:latest
+        volumeMounts:
+        - name: token-vol
+          mountPath: /var/run/secrets/token
         name: manager
         securityContext:
           allowPrivilegeEscalation: false
@@ -67,4 +70,12 @@ spec:
             cpu: 10m
             memory: 64Mi
       serviceAccountName: controller-manager
+      volumes:
+      - name: token-vol
+        projected:
+          sources:
+          - serviceAccountToken:
+             path: saToken
+             expirationSeconds: 660
       terminationGracePeriodSeconds: 10
+
